@@ -1,4 +1,4 @@
-"use server";
+"use server"
 
 import { LanguageModelV1, streamText } from "ai";
 import { Message } from "./types";
@@ -39,10 +39,56 @@ export const getAssistantMessageStream = async (
   return await getTextStream(messages);
 };
 
+// 将 ReadableStream 转换为 AsyncGenerator
+async function* streamToAsyncGenerator(stream: ReadableStream<string>): AsyncGenerator<string> {
+  const reader = stream.getReader();
+  let buffer = '';
+  
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      
+      if (done) {
+        // 处理剩余的缓冲区
+        if (buffer) {
+          yield buffer;
+        }
+        break;
+      }
+      
+      // 累积内容
+      buffer += value;
+      
+      // 处理完整行
+      const lines = buffer.split('\n');
+      if (lines.length > 1) {
+        // 保留最后一行
+        buffer = lines.pop() || '';
+        
+        // 处理完整行
+        const newContent = lines.join('\n');
+        yield newContent;
+      }
+    }
+  } catch (error) {
+    console.error('流处理出错:', error);
+    yield `<p class="text-red-500">处理出错: ${String(error)}</p>`;
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 // 状态机
 class MarkdownRenderer {
   private buffer = '';
   private fullContent = '';
+  private renderedContent = '';
+  private onContentUpdate: ((content: string) => void) | null = null;
+  
+  // 设置内容更新回调
+  setContentUpdateCallback(callback: (content: string) => void) {
+    this.onContentUpdate = callback;
+  }
   
   // 处理流式内容
   async processStream(stream: ReadableStream<string>): Promise<string> {
@@ -56,6 +102,7 @@ class MarkdownRenderer {
           // 处理剩余的缓冲区
           if (this.buffer) {
             this.fullContent += this.buffer;
+            this.processAndRenderIncremental(this.buffer);
           }
           break;
         }
@@ -70,22 +117,44 @@ class MarkdownRenderer {
           this.buffer = lines.pop() || '';
           
           // 处理完整行
-          for (const line of lines) {
-            this.fullContent += line + '\n';
-          }
+          const newContent = lines.join('\n');
+          this.fullContent += newContent + '\n';
+          
+          // 处理增量内容
+          this.processAndRenderIncremental(newContent);
         }
       }
       
       // 完整内容
-      return this.processMarkdown(this.fullContent);
+      return this.renderedContent;
     } catch (error) {
       logDebug(`流处理出错:`, error);
       return `<p class="text-red-500">处理出错: ${String(error)}</p>`;
     }
   }
   
+  // 处理增量内容并触发渲染
+  private processAndRenderIncremental(newContent: string) {
+    // 检查是否有完整的段落或代码块
+    const hasCompleteParagraph = /\n\n/.test(newContent);
+    const hasCompleteCodeBlock = /```[\s\S]*?```/.test(newContent);
+    
+    if (hasCompleteParagraph || hasCompleteCodeBlock) {
+      // 处理 Markdown 内容
+      const processedContent = this.processMarkdown(this.fullContent);
+      
+      // 更新渲染内容
+      this.renderedContent = processedContent;
+      
+      // 触发内容更新回调
+      if (this.onContentUpdate) {
+        this.onContentUpdate(this.renderedContent);
+      }
+    }
+  }
+  
   // 处理完整的 Markdown 内容
-  private processMarkdown(markdown: string): string {
+  processMarkdown(markdown: string): string {
     // 预处理
     let html = markdown;
     
@@ -318,12 +387,41 @@ export const getMessageReactNode = async (message: Message) => {
 const StreamableAIMessage = async ({ message }: { message: Message }) => {
   const stream = await getAssistantMessageStream([message]);
   const renderer = new MarkdownRenderer();
-  const html = await renderer.processStream(stream);
+  
+  // 将 ReadableStream 转换为 AsyncGenerator
+  const generator = streamToAsyncGenerator(stream);
   
   return (
-    <div 
-      className="markdown-content prose prose-sm dark:prose-invert max-w-none"
-      dangerouslySetInnerHTML={{ __html: html }}
-    />
+    <StreamableRenderFromAsyncGenerator g={generator} renderer={renderer} />
+  );
+};
+
+// 基于 AsyncGenerator 的流式渲染组件
+const StreamableRenderFromAsyncGenerator = async ({
+  g,
+  renderer
+}: {
+  g: AsyncGenerator<string>;
+  renderer: MarkdownRenderer;
+}) => {
+  const { done, value } = await g.next();
+  
+  if (done) {
+    return <div className="markdown-content prose prose-sm dark:prose-invert max-w-none" />;
+  }
+  
+  // 处理当前内容
+  const processedContent = renderer.processMarkdown(value);
+  
+  return (
+    <>
+      <div 
+        className="markdown-content prose prose-sm dark:prose-invert max-w-none"
+        dangerouslySetInnerHTML={{ __html: processedContent }}
+      />
+      <Suspense fallback={<div>...</div>}>
+        <StreamableRenderFromAsyncGenerator g={g} renderer={renderer} />
+      </Suspense>
+    </>
   );
 };

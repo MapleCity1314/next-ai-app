@@ -81,7 +81,7 @@ const Chat = ({ getMessageReactNode }: ChatProps) => {
     try {
       logDebug(`开始获取 AI 响应，用户消息 ID: ${userMessage.id}`);
 
-      // 占位
+      // 创建 AI 消息占位
       const aiMessage: ChatMessage = {
         id: `ai-${Date.now().toString()}`,
         role: "assistant",
