@@ -383,12 +383,10 @@ export const getMessageReactNode = async (message: Message) => {
   );
 };
 
-// 流式 AI 消息组件
 const StreamableAIMessage = async ({ message }: { message: Message }) => {
   const stream = await getAssistantMessageStream([message]);
   const renderer = new MarkdownRenderer();
-  
-  // 将 ReadableStream 转换为 AsyncGenerator
+
   const generator = streamToAsyncGenerator(stream);
   
   return (
@@ -396,7 +394,6 @@ const StreamableAIMessage = async ({ message }: { message: Message }) => {
   );
 };
 
-// 基于 AsyncGenerator 的流式渲染组件
 const StreamableRenderFromAsyncGenerator = async ({
   g,
   renderer
